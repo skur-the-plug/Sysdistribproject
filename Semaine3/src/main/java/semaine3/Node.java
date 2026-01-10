@@ -8,7 +8,7 @@ import java.util.concurrent.LinkedBlockingQueue;
  * Node owns the clocks and the networking.
  * Clocks are updated:
  *  - before sending (tick)
- *  - upon receiving (merge + tick rules)
+ *  - upon DELIVERY (merge + tick rules) <- PAS à la réception réseau!
  */
 public final class Node implements AutoCloseable {
     private final int myId;
@@ -20,6 +20,11 @@ public final class Node implements AutoCloseable {
     private final NetServer server;
 
     private final BlockingQueue<Message> inbox = new LinkedBlockingQueue<>();
+
+    // Buffer causal : messages reçus mais pas encore livrés
+    private final java.util.List<Message> buffer =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
     private volatile boolean running = true;
 
     public Node(int myId, Config config) {
@@ -37,11 +42,11 @@ public final class Node implements AutoCloseable {
             while (running) {
                 try {
                     Message msg = inbox.take();
-                    System.out.println("\n[Node " + myId + "] RECEIVED: " + msg.payload);
+                    System.out.println("\n[Node " + myId + "] DELIVERED: " + msg.payload);
                     System.out.println("  from=" + msg.senderId
-                            + " lamport(received)=" + msg.lamportTs
-                            + " vc(received)=" + Arrays.toString(msg.vectorClock));
-                    printClocks("after-receive");
+                            + " lamport(msg)=" + msg.lamportTs
+                            + " vc(msg)=" + Arrays.toString(msg.vectorClock));
+                    printClocks("after-delivery");
                     System.out.print("> ");
                 } catch (InterruptedException ignored) {
                     return;
@@ -51,11 +56,12 @@ public final class Node implements AutoCloseable {
         processor.setDaemon(true);
         processor.start();
 
+        // Delivery thread: tente de livrer les messages du buffer
         Thread delivery = new Thread(() -> {
             while (running) {
                 try {
                     tryDeliverBuffered();
-                    Thread.sleep(50); // toutes les X ms
+                    Thread.sleep(50); // toutes les 50ms
                 } catch (InterruptedException e) {
                     return;
                 }
@@ -63,19 +69,28 @@ public final class Node implements AutoCloseable {
         }, "delivery-" + myId);
         delivery.setDaemon(true);
         delivery.start();
-
     }
+
+    /**
+     * Vérifie si un message peut être livré selon l'ordre causal.
+     * Règle: V(m) = [V₁, V₂, ..., Vₙ]
+     * On peut livrer si:
+     *   V(m)[sender] = L[sender] + 1
+     *   V(m)[i] ≤ L[i] pour tout i ≠ sender
+     */
     private boolean canDeliver(Message msg) {
         int[] V = msg.vectorClock;
-        int[] L = vectorClock.snapshot(); // état "livré" (important)
+        int[] L = vectorClock.snapshot(); // état actuel "livré"
 
         if (V == null || V.length != L.length) return false;
 
         int s = msg.senderId;
         if (s < 0 || s >= L.length) return false;
 
+        // Condition 1: V[s] = L[s] + 1
         if (V[s] != L[s] + 1) return false;
 
+        // Condition 2: V[i] ≤ L[i] pour i ≠ s
         for (int i = 0; i < L.length; i++) {
             if (i == s) continue;
             if (V[i] > L[i]) return false;
@@ -83,6 +98,9 @@ public final class Node implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Tente de livrer les messages en attente dans le buffer.
+     */
     private void tryDeliverBuffered() {
         boolean progressed;
         do {
@@ -95,7 +113,7 @@ public final class Node implements AutoCloseable {
                         buffer.remove(idx);
                         deliver(m);
                         progressed = true;
-                        break; // recommencer (car la livraison débloque d'autres messages)
+                        break; // recommencer car la livraison débloque d'autres messages
                     }
                 }
             }
@@ -103,47 +121,45 @@ public final class Node implements AutoCloseable {
         } while (progressed);
     }
 
+    /**
+     * Livre un message : met à jour le VC puis envoie au processor.
+     */
     private void deliver(Message msg) {
-        // IMPORTANT: ici seulement on "applique" l'horloge vectorielle du message
-        // Ton VectorClock actuel ne permet pas d'appliquer "sans tick en plus" proprement,
-        // donc on va faire une version simple:
-        applyVectorOnDeliver(msg.vectorClock, msg.senderId);
-
-        // maintenant on envoie au processor (comme avant)
-        inbox.offer(msg);
-    }
-
-    private void applyVectorOnDeliver(int[] received, int sender) {
-        // On veut que L[sender] devienne L[sender]+1 (et received[sender] == L+1)
-        // et que L[i] = max(L[i], received[i]) (mais received[i] <= L[i] pour i!=sender)
+        // Appliquer le VC du message : merge + increment
         int[] L = vectorClock.snapshot();
+        int[] received = msg.vectorClock;
 
+        // Merge: L[i] = max(L[i], received[i])
         for (int i = 0; i < L.length; i++) {
             L[i] = Math.max(L[i], received[i]);
         }
 
-        // ⚠️ Comme ton VectorClock encapsule vc[] en private,
-        // le plus propre est d'ajouter une méthode "setFrom(int[] newVc)" dans VectorClock.
-        // Je te donne ça juste après.
-        vectorClock.setFrom(L);
-    }
+        // Increment ma propre composante
+        L[myId]++;
 
+        // Mettre à jour le VC
+        vectorClock.setFrom(L);
+
+        // Envoyer au processor pour affichage
+        inbox.offer(msg);
+    }
 
     /**
      * Called by ReceiverThread after parsing message.
+     * NE PAS mettre à jour vectorClock ici!
      */
-    // // buffer causal
-    private final java.util.List<Message> buffer = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-
     public void onNetworkReceive(Message msg) {
-        // Update clocks on receive
+        // Update Lamport clock on receive
         lamportClock.onReceive(msg.lamportTs);
 
-        // Vector clock: merge then increment local component
-        vectorClock.onReceive(msg.vectorClock);
+        // Ajouter au buffer pour vérification causale
+        synchronized (buffer) {
+            buffer.add(msg);
+        }
 
-        // Enqueue for processing/demo
-        inbox.offer(msg);
+        System.out.println("[Node " + myId + "] RECEIVED (buffered): "
+                + msg.payload + " from=" + msg.senderId
+                + " vc=" + Arrays.toString(msg.vectorClock));
     }
 
     public void send(int destId, String payload) {

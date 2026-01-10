@@ -15,9 +15,9 @@ import java.nio.charset.StandardCharsets;
  */
 public final class ReceiverThread implements Runnable {
     private final Socket socket;
-    private final Node node;
+    private final semaine3.Node node;
 
-    public ReceiverThread(Socket socket, Node node) {
+    public ReceiverThread(Socket socket, semaine3.Node node) {
         this.socket = socket;
         this.node = node;
     }
