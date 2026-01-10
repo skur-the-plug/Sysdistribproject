@@ -6,7 +6,7 @@ package semaine3;
  *
  * configFile is optional. If not provided, defaults to 3 nodes on localhost ports 5000..5002.
  */
-public final class Main {
+public class Main {
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
             System.out.println("Usage: java semaine3.Main <myId> [configFile]");

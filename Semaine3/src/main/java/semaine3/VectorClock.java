@@ -32,6 +32,13 @@ public final class VectorClock {
         }
         vc[myId] += 1;
     }
+    public synchronized void setFrom(int[] newVc) {
+        if (newVc == null || newVc.length != vc.length) {
+            throw new IllegalArgumentException("bad vector length");
+        }
+        System.arraycopy(newVc, 0, vc, 0, vc.length);
+    }
+
 
     public synchronized int[] snapshot() {
         return Arrays.copyOf(vc, vc.length);

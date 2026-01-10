@@ -50,11 +50,91 @@ public final class Node implements AutoCloseable {
         }, "processor-" + myId);
         processor.setDaemon(true);
         processor.start();
+
+        Thread delivery = new Thread(() -> {
+            while (running) {
+                try {
+                    tryDeliverBuffered();
+                    Thread.sleep(50); // toutes les X ms
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "delivery-" + myId);
+        delivery.setDaemon(true);
+        delivery.start();
+
     }
+    private boolean canDeliver(Message msg) {
+        int[] V = msg.vectorClock;
+        int[] L = vectorClock.snapshot(); // état "livré" (important)
+
+        if (V == null || V.length != L.length) return false;
+
+        int s = msg.senderId;
+        if (s < 0 || s >= L.length) return false;
+
+        if (V[s] != L[s] + 1) return false;
+
+        for (int i = 0; i < L.length; i++) {
+            if (i == s) continue;
+            if (V[i] > L[i]) return false;
+        }
+        return true;
+    }
+
+    private void tryDeliverBuffered() {
+        boolean progressed;
+        do {
+            progressed = false;
+
+            synchronized (buffer) {
+                for (int idx = 0; idx < buffer.size(); idx++) {
+                    Message m = buffer.get(idx);
+                    if (canDeliver(m)) {
+                        buffer.remove(idx);
+                        deliver(m);
+                        progressed = true;
+                        break; // recommencer (car la livraison débloque d'autres messages)
+                    }
+                }
+            }
+
+        } while (progressed);
+    }
+
+    private void deliver(Message msg) {
+        // IMPORTANT: ici seulement on "applique" l'horloge vectorielle du message
+        // Ton VectorClock actuel ne permet pas d'appliquer "sans tick en plus" proprement,
+        // donc on va faire une version simple:
+        applyVectorOnDeliver(msg.vectorClock, msg.senderId);
+
+        // maintenant on envoie au processor (comme avant)
+        inbox.offer(msg);
+    }
+
+    private void applyVectorOnDeliver(int[] received, int sender) {
+        // On veut que L[sender] devienne L[sender]+1 (et received[sender] == L+1)
+        // et que L[i] = max(L[i], received[i]) (mais received[i] <= L[i] pour i!=sender)
+        int[] L = vectorClock.snapshot();
+
+        for (int i = 0; i < L.length; i++) {
+            L[i] = Math.max(L[i], received[i]);
+        }
+
+        // ⚠️ Comme ton VectorClock encapsule vc[] en private,
+        // le plus propre est d'ajouter une méthode "setFrom(int[] newVc)" dans VectorClock.
+        // Je te donne ça juste après.
+        vectorClock.setFrom(L);
+    }
+
 
     /**
      * Called by ReceiverThread after parsing message.
      */
+    // // buffer causal
+    private final java.util.List<Message> buffer = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
     public void onNetworkReceive(Message msg) {
         // Update clocks on receive
         lamportClock.onReceive(msg.lamportTs);
