@@ -43,30 +43,7 @@ Le projet est structuré par étapes (Semaine 1 à 5), mais certaines fonctionna
 ---
 
 ## 📁 Structure du projet
-Sysdistribproject/
-│
-├── Semaine1/
-│ └── Communication réseau (sockets TCP)
-│
-├── Semaine2/
-│ └── Threads + BlockingQueue
-│
-├── Semaine3/
-│ └── Horloges logiques + Multicast causal
-│
-│ ├── Node.java # Cœur du système (clocks, buffer, broadcast)
-│ ├── Message.java # Structure des messages
-│ ├── LamportClock.java # Horloge de Lamport
-│ ├── VectorClock.java # Horloge vectorielle
-│ ├── NetServer.java # Serveur TCP
-│ ├── NetClient.java # Client TCP
-│ ├── ReceiverThread.java # Thread de réception
-│ ├── SenderThread.java # Interface CLI
-│ ├── Main.java # Lancement d’un nœud
-│ └── Config.java # Configuration des nœuds
-│
-└── README.md
-
+<img width="583" height="729" alt="architecture" src="https://github.com/user-attachments/assets/f10a96e8-76c3-4046-bd8b-880bf963e072" />
 
 ## ⏱️ Fonctionnement global
 1. Chaque nœud démarre un serveur TCP
